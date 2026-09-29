@@ -348,11 +348,15 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
         // MemberExpression shape (e.g. _tmp_0[0]) from the AnalysisPass rewrite.
         // The arrayPatternElements set is global (not scoped), so a same-named variable
         // inside a function body may be falsely flagged — guard with a shape check.
+        // Also require the tuple rewrite's own marker. Name + shape alone matched a
+        // user's `h = high[1]` inside a function whenever some tuple elsewhere declared `h`,
+        // compiling the builtin `high` as a user variable ($.get($.let.high, 0)[1]).
         const isArrayPatternVar =
             scopeManager.isArrayPatternElement(decl.id.name) &&
             decl.init &&
             decl.init.type === 'MemberExpression' &&
-            decl.init.computed;
+            decl.init.computed &&
+            decl.init._tuplePick === true;
 
         // Transform identifiers in the init expression
         if (decl.init && !isArrowFunction && !isArrayPatternVar) {
