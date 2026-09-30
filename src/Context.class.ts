@@ -89,7 +89,7 @@ export class Context {
     public length: number = 0;
 
     /** References to drawing helpers for streaming rollback and plot sync */
-    public _drawingHelpers: { rollbackFromBar(barIdx: number): void; syncToPlot?(): void }[] = [];
+    public _drawingHelpers: { rollbackFromBar(barIdx: number): void; syncToPlot?(): void; snapshotAt?(barIdx: number): void }[] = [];
 
     // Combined namespace and core functions - the default way to access everything
     public pine: {
@@ -612,6 +612,11 @@ export class Context {
      * Roll back all drawing objects created at or after the given bar index.
      * Called during streaming updates to prevent accumulation when bars are re-processed.
      */
+    /** Snapshot drawing objects right before bar `barIdx` runs (paired with the var snapshot). */
+    snapshotDrawings(barIdx: number): void {
+        for (const helper of this._drawingHelpers) helper.snapshotAt?.(barIdx);
+    }
+
     rollbackDrawings(fromBarIdx: number): void {
         for (const helper of this._drawingHelpers) {
             helper.rollbackFromBar(fromBarIdx);

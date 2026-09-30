@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { restoreDrawingSnap, takeDrawingSnap } from '../drawingSnapshot';
+import type { DrawingSnap } from '../drawingSnapshot';
 import { Series } from '../../Series';
 import { LineObject } from '../line/LineObject';
 import { LinefillObject } from './LinefillObject';
@@ -8,6 +10,7 @@ import { silentInSecondary } from '../silentInSecondary';
 
 export class LinefillHelper {
     private _linefills: LinefillObject[] = [];
+    private _snap: DrawingSnap<LinefillObject> | null = null;
 
     constructor(private context: any) {}
 
@@ -192,7 +195,14 @@ export class LinefillHelper {
      * Called during streaming rollback to prevent accumulation.
      */
     rollbackFromBar(barIdx: number): void {
+        // Undo deletions/edits made on the re-executed bar (see drawingSnapshot.ts)
+        if (this._snap && this._snap.bar === barIdx) this._linefills = restoreDrawingSnap(this._snap);
         this._linefills = this._linefills.filter((lf) => lf._createdAtBar < barIdx);
         this.syncToPlot();
+    }
+
+    /** Remember objects + fields right before bar `barIdx` executes (streaming). */
+    snapshotAt(barIdx: number): void {
+        this._snap = takeDrawingSnap(this._linefills, barIdx);
     }
 }

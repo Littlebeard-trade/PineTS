@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 LuxAlgo
 import { IProvider, ISymbolInfo } from './marketData/IProvider';
+import { snapshotContents, restoreContents } from './varContentSnapshot';
 import { Context } from './Context.class';
 import { splitTickerModifier, withTickerModifier } from './tickerModifier';
 import { createSyminfo } from './namespaces/Syminfo';
@@ -497,6 +498,7 @@ export class PineTS {
         if (endIdx - startIdx > 1) {
             await this._executeIterations(context, prepared.fn, startIdx, endIdx - 1);
             (context as any)._varSnapshot = this._snapshotVarState(context);
+            context.snapshotDrawings(endIdx - 1);
             await this._executeIterations(context, prepared.fn, endIdx - 1, endIdx);
         } else {
             // Single bar: no meaningful pre-last range to snapshot; execute directly.
@@ -553,10 +555,15 @@ export class PineTS {
                     await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd - 1);
                     // Snapshot state before the last bar
                     varSnapshot = this._snapshotVarState(context);
+                    context.snapshotDrawings(batchEnd - 1);
                     // Now process the last bar
                     await this._executeIterations(context, this._transpiledCode, batchEnd - 1, batchEnd);
                 } else if (enableLiveStream && batchEnd >= availableData && toProcess === 1) {
-                    // Only 1 bar to process (the last one) — snapshot is already set from previous batch
+                    // Only 1 bar to process (the last one). The state right now IS the
+                    // pre-bar state, so snapshot it (a history whose last page was a single bar
+                    // otherwise had no snapshot and ticks compounded).
+                    varSnapshot = this._snapshotVarState(context);
+                    context.snapshotDrawings(batchEnd - 1);
                     await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd);
                 } else {
                     await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd);
@@ -888,6 +895,7 @@ export class PineTS {
             // Multiple bars to re-execute: snapshot before the last one.
             await this._executeIterations(context, this._transpiledCode as Function, processFrom, endIdx - 1);
             (context as any)._varSnapshot = this._snapshotVarState(context);
+            context.snapshotDrawings(endIdx - 1);
             await this._executeIterations(context, this._transpiledCode as Function, endIdx - 1, endIdx);
         } else {
             // Only 1 bar to re-execute (same-bar tick update).
@@ -975,7 +983,9 @@ export class PineTS {
      */
     private _snapshotVarState(context: Context): any {
         const contextVarNames = ['const', 'var', 'let', 'params'];
-        const snapshot: any = { main: {}, lctx: [] };
+        const snapshot: any = { main: {}, lctx: [], contents: [] };
+        // Contents of var collections reachable from var values (see varContentSnapshot.ts)
+        const seen = new Set<object>();
 
         const snapContainer = (container: any) => {
             const snap: any = {};
@@ -989,6 +999,7 @@ export class PineTS {
                         const len = item.data.length;
                         const lastVal = len > 0 ? item.data[len - 1] : undefined;
                         snap[ctxVarName][key] = { len, lastVal };
+                        if (ctxVarName === 'var') snapshotContents(lastVal, snapshot.contents, seen);
                     }
                 }
             }
@@ -1045,6 +1056,7 @@ export class PineTS {
         };
 
         restoreContainer(context, snapshot.main);
+        restoreContents(snapshot.contents);
         if (context.lctx && snapshot.lctx) {
             let i = 0;
             context.lctx.forEach((lctx: any) => {
