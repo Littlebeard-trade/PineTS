@@ -210,4 +210,56 @@ plot(close)`;
         expect(cellText(ctxs[1])).toBe('30');
         expect(cellText(ctxs[2])).toBe('30');
     });
+    it('re-initializes vars first created on the forming bar (var table/line inside barstate.islast, lazy counters)', async () => {
+        const bars = makeBars(50);
+        const src = `//@version=6
+indicator("t", overlay=true)
+f() =>
+    var int n = 0
+    n += 1
+    n
+if barstate.islast
+    var table t = table.new(position.top_right, 1, 1)
+    table.cell(t, 0, 0, "x")
+    var line l = line.new(bar_index - 5, close, bar_index, close)
+    l.set_xy2(bar_index, close)
+    var int c = 0
+    c += 1
+    label.new(bar_index, close, str.tostring(c) + "/" + str.tostring(f()))
+plot(close)`;
+        const steps = [tick(bars), tick(bars), newBar(bars), tick(bars), tick(bars)];
+        const ctxs = await streamSteps(src, bars, steps);
+        for (const c of ctxs) {
+            expect(c.tables.length).toBe(1);
+            expect(c.lines.length).toBe(1);
+            expect(c.labels.map((x: any) => x.text)).toEqual(['1/1']);
+        }
+    }, 20_000);
+    it('rolls back function-argument history (x[1] inside a function) on the forming bar', async () => {
+        const bars = makeBars(50);
+        const src = `//@version=6
+indicator("t")
+f(x) => x - x[1]
+g(int k) => k[1]
+plot(f(close * 2), "d")
+plot(g(bar_index * 3), "g")`;
+        const pine = new PineTS(new MemProvider(bars) as any, 'T', '1', bars.length);
+        const got: any[] = [];
+        const steps = [tick(bars), tick(bars), newBar(bars), tick(bars)];
+        await new Promise<void>((resolve, reject) => {
+            const evt: any = pine.stream(src, { live: true, interval: 50, pageSize: bars.length });
+            evt.on('data', (ctx: any) => {
+                got.push({ d: ctx.plots['d'].data.at(-1).value, g: ctx.plots['g'].data.at(-1).value, bars: bars.map((b) => ({ ...b })) });
+                const step = steps[got.length - 1];
+                if (step) step();
+                else { evt.stop(); resolve(); }
+            });
+            evt.on('error', (e: any) => { evt.stop(); reject(e); });
+        });
+        for (const e of got) {
+            const fresh: any = await new PineTS(new MemProvider(e.bars) as any, 'T', '1', e.bars.length).run(src);
+            expect(e.d).toBeCloseTo(fresh.plots['d'].data.at(-1).value, 9);
+            expect(e.g).toBe(fresh.plots['g'].data.at(-1).value);
+        }
+    }, 20_000);
 });

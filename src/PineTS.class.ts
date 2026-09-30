@@ -458,7 +458,18 @@ export class PineTS {
         const slices = (transpiledFn as any)._ltfSlices;
         if (slices) (context as any)._ltfTruncatedBodies = slices;
 
-        await this._executeIterations(context, transpiledFn, this.data.length - periods, this.data.length);
+        // Same split as _runComplete: snapshot before the last bar so updateTail() (request.security
+        // secondaries run through here) restores from a snapshot instead of the pop-based fallback.
+        const startIdx = this.data.length - periods;
+        const endIdx = this.data.length;
+        if (endIdx - startIdx > 1) {
+            await this._executeIterations(context, transpiledFn, startIdx, endIdx - 1);
+            (context as any)._varSnapshot = this._snapshotVarState(context);
+            context.snapshotDrawings(endIdx - 1);
+            await this._executeIterations(context, transpiledFn, endIdx - 1, endIdx);
+        } else {
+            await this._executeIterations(context, transpiledFn, startIdx, endIdx);
+        }
 
         return context;
     }
@@ -849,37 +860,40 @@ export class PineTS {
         if (snapshot) {
             this._restoreVarState(context, snapshot);
         } else {
-            // No snapshot available (context from runPretranspiled or single-bar
-            // _runComplete) — fall back to pop-based rollback.
+            // No snapshot available (single-bar _runComplete) — fall back to pop-based
+            // rollback. _removeLastResult already pops the result and market-data series,
+            // so skip the pops below (they used to run too: two pops, one push per tick, so
+            // the secondary lost a bar on every tick and request.security read the wrong bar).
             this._removeLastResult(context);
         }
-
-        // Pop result + market-data series.
-        // _restoreVarState handles var/let/const/params Series but does NOT
-        // cover result arrays or the market data series on context.data —
-        // those must be popped explicitly here.
-        if (Array.isArray(context.result)) {
-            context.result.pop();
-        } else if (typeof context.result === 'object' && context.result !== null) {
-            for (let key in context.result) {
-                if (Array.isArray(context.result[key])) {
-                    context.result[key].pop();
+        if (snapshot) {
+            // Pop result + market-data series.
+            // _restoreVarState handles var/let/const/params Series but does NOT
+            // cover result arrays or the market data series on context.data —
+            // those must be popped explicitly here.
+            if (Array.isArray(context.result)) {
+                context.result.pop();
+            } else if (typeof context.result === 'object' && context.result !== null) {
+                for (let key in context.result) {
+                    if (Array.isArray(context.result[key])) {
+                        context.result[key].pop();
+                    }
                 }
             }
-        }
 
-        context.data.close.data.pop();
-        context.data.open.data.pop();
-        context.data.high.data.pop();
-        context.data.low.data.pop();
-        context.data.volume.data.pop();
-        context.data.hl2.data.pop();
-        context.data.hlc3.data.pop();
-        context.data.ohlc4.data.pop();
-        context.data.hlcc4.data.pop();
-        context.data.openTime.data.pop();
-        if (context.data.closeTime) context.data.closeTime.data.pop();
-        context.data.bar_index.data.pop();
+            context.data.close.data.pop();
+            context.data.open.data.pop();
+            context.data.high.data.pop();
+            context.data.low.data.pop();
+            context.data.volume.data.pop();
+            context.data.hl2.data.pop();
+            context.data.hlc3.data.pop();
+            context.data.ohlc4.data.pop();
+            context.data.hlcc4.data.pop();
+            context.data.openTime.data.pop();
+            if (context.data.closeTime) context.data.closeTime.data.pop();
+            context.data.bar_index.data.pop();
+        }
 
         context.dataVersion = (context.dataVersion || 0) + 1;
         context.length = this.data.length;
@@ -1000,6 +1014,12 @@ export class PineTS {
                         const lastVal = len > 0 ? item.data[len - 1] : undefined;
                         snap[ctxVarName][key] = { len, lastVal };
                         if (ctxVarName === 'var') snapshotContents(lastVal, snapshot.contents, seen);
+                    } else if (Array.isArray(item)) {
+                        // Plain arrays (context.params: scalar function arguments) grow one
+                        // element per bar too; without this a re-executed bar appended a
+                        // duplicate and `x[1]` inside a function read the wrong bar.
+                        const len = item.length;
+                        snap[ctxVarName][key] = { len, lastVal: len > 0 ? item[len - 1] : undefined, isArray: true };
                     }
                 }
             }
@@ -1008,8 +1028,10 @@ export class PineTS {
 
         snapshot.main = snapContainer(context);
         if (context.lctx) {
-            const lctxSnaps: any[] = [];
-            context.lctx.forEach((lctx: any) => lctxSnaps.push(snapContainer(lctx)));
+            // Keyed by call-path id, so restore can also drop function contexts first
+            // created on the re-executed bar.
+            const lctxSnaps = new Map<string, any>();
+            context.lctx.forEach((lctx: any, id: string) => lctxSnaps.set(id, snapContainer(lctx)));
             snapshot.lctx = lctxSnaps;
         }
 
@@ -1037,10 +1059,26 @@ export class PineTS {
 
         const restoreContainer = (container: any, snap: any) => {
             for (const ctxVarName of contextVarNames) {
-                if (!snap[ctxVarName] || !container[ctxVarName]) continue;
+                if (!container[ctxVarName]) continue;
+                // Series first created on the re-executed bar (a `var` declared inside
+                // `if barstate.islast`, a branch first taken on that bar, ...) did not exist
+                // before it: drop them so the re-run re-initializes them, like TradingView.
+                // Otherwise the var keeps pointing at an object the drawing rollback just
+                // removed (the drawing vanishes) or its value compounds per tick.
+                const snapNs = snap[ctxVarName] ?? {};
+                for (const key of Object.keys(container[ctxVarName])) {
+                    const it = container[ctxVarName][key];
+                    if (!(key in snapNs) && (it instanceof Series || Array.isArray(it))) delete container[ctxVarName][key];
+                }
+                if (!snap[ctxVarName]) continue;
                 for (const key in snap[ctxVarName]) {
                     const item = container[ctxVarName][key];
                     const snapInfo = snap[ctxVarName][key];
+                    if (snapInfo?.isArray && Array.isArray(item)) {
+                        if (item.length > snapInfo.len) item.length = snapInfo.len;
+                        if (snapInfo.len > 0 && snapInfo.lastVal !== undefined) item[snapInfo.len - 1] = snapInfo.lastVal;
+                        continue;
+                    }
                     if (item instanceof Series && snapInfo && typeof snapInfo.len === 'number') {
                         // Truncate back to snapshot length
                         if (item.data.length > snapInfo.len) {
@@ -1058,11 +1096,20 @@ export class PineTS {
         restoreContainer(context, snapshot.main);
         restoreContents(snapshot.contents);
         if (context.lctx && snapshot.lctx) {
-            let i = 0;
-            context.lctx.forEach((lctx: any) => {
-                if (snapshot.lctx[i]) restoreContainer(lctx, snapshot.lctx[i]);
-                i++;
-            });
+            if (snapshot.lctx instanceof Map) {
+                for (const id of [...context.lctx.keys()]) {
+                    const snap = snapshot.lctx.get(id);
+                    // A function context first created on the re-executed bar: drop it.
+                    if (!snap) context.lctx.delete(id);
+                    else restoreContainer(context.lctx.get(id), snap);
+                }
+            } else {
+                let i = 0;
+                context.lctx.forEach((lctx: any) => {
+                    if (snapshot.lctx[i]) restoreContainer(lctx, snapshot.lctx[i]);
+                    i++;
+                });
+            }
         }
 
         // Roll the strategy ledger back to its pre-last-bar state (no-op for
