@@ -51,18 +51,6 @@ import { swap_rows as swap_rows_factory } from './methods/swap_rows';
 import { trace as trace_factory } from './methods/trace';
 import { transpose as transpose_factory } from './methods/transpose';
 
-/** `m.add_row(array_id=a)` / `m.add_col(column=0, array_id=a)`: the transpiler passes named
- *  arguments as one plain object, which the positional (index, values) helpers ignored — the
- *  row/column was added EMPTY. Map it back to positional. */
-function namedMatrixArgs(args: any[], indexName: 'row' | 'column'): any[] {
-    const a = args[args.length - 1];
-    if (a && typeof a === 'object' && Object.getPrototypeOf(a) === Object.prototype && (indexName in a || 'array_id' in a)) {
-        const positional = args.slice(0, -1);
-        return [positional[0] ?? a[indexName], positional[1] ?? a.array_id];
-    }
-    return args;
-}
-
 export class PineMatrixObject {
     public matrix: any[][];
     private _add_col: any;
@@ -186,11 +174,11 @@ export class PineMatrixObject {
     }
 
     add_col(...args: any[]) {
-        return this._add_col(this, ...namedMatrixArgs(args, 'column'));
+        return this._add_col(this, ...args);
     }
 
     add_row(...args: any[]) {
-        return this._add_row(this, ...namedMatrixArgs(args, 'row'));
+        return this._add_row(this, ...args);
     }
 
     avg(...args: any[]) {
