@@ -23,5 +23,7 @@ export { aggregateCandles, selectSubTimeframe, getAggregationRatio } from './mar
 export { splitTickerModifier, stripTickerModifier, withTickerModifier, decodeTickerId, encodeTickerId } from './tickerModifier';
 
 export { PineTS, Context, Provider, Indicator, PineRuntimeError };
+// LB fork: expose the transpiler for debugging generated code
+export { transpile } from './transpiler';
 export type { IPineInput, IPineProp, PineInputType, PineInputDisplay, PinePropType, PreparedScript } from './Indicator';
 export { INDICATOR_PROPS, STRATEGY_PROPS, propsForDeclaration } from './Indicator';
