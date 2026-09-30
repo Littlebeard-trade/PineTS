@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { restoreDrawingSnap, takeDrawingSnap } from '../drawingSnapshot';
+import type { DrawingSnap } from '../drawingSnapshot';
 import { Series } from '../../Series';
 import { parseArgsForPineParams } from '../utils';
 import { BoxObject } from './BoxObject';
@@ -27,6 +29,7 @@ const BOX_NEW_ARGS_TYPES: Record<string, string> = {
 
 export class BoxHelper {
     private _boxes: BoxObject[] = [];
+    private _snap: DrawingSnap<BoxObject> | null = null;
 
     constructor(private context: any) {}
 
@@ -405,7 +408,14 @@ export class BoxHelper {
      * Called during streaming rollback to prevent accumulation.
      */
     rollbackFromBar(barIdx: number): void {
+        // Undo deletions/edits made on the re-executed bar (see drawingSnapshot.ts)
+        if (this._snap && this._snap.bar === barIdx) this._boxes = restoreDrawingSnap(this._snap);
         this._boxes = this._boxes.filter((b) => b._createdAtBar < barIdx);
         this.syncToPlot();
+    }
+
+    /** Remember objects + fields right before bar `barIdx` executes (streaming). */
+    snapshotAt(barIdx: number): void {
+        this._snap = takeDrawingSnap(this._boxes, barIdx);
     }
 }

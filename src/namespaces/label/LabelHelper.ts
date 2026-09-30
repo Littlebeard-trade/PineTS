@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { restoreDrawingSnap, takeDrawingSnap } from '../drawingSnapshot';
+import type { DrawingSnap } from '../drawingSnapshot';
 import { Series } from '../../Series';
 import { parseArgsForPineParams } from '../utils';
 import { LabelObject } from './LabelObject';
@@ -26,6 +28,7 @@ const LABEL_NEW_ARGS_TYPES = {
 
 export class LabelHelper {
     private _labels: LabelObject[] = [];
+    private _snap: DrawingSnap<LabelObject> | null = null;
 
     constructor(private context: any) {}
 
@@ -337,8 +340,15 @@ export class LabelHelper {
      * Called during streaming rollback to prevent accumulation.
      */
     rollbackFromBar(barIdx: number): void {
+        // Undo deletions/edits made on the re-executed bar (see drawingSnapshot.ts)
+        if (this._snap && this._snap.bar === barIdx) this._labels = restoreDrawingSnap(this._snap);
         this._labels = this._labels.filter((l) => l._createdAtBar < barIdx);
         this.syncToPlot();
+    }
+
+    /** Remember objects + fields right before bar `barIdx` executes (streaming). */
+    snapshotAt(barIdx: number): void {
+        this._snap = takeDrawingSnap(this._labels, barIdx);
     }
 
     // --- Style constants ---

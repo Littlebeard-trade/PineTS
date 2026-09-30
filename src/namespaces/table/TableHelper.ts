@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { restoreDrawingSnap, takeDrawingSnap } from '../drawingSnapshot';
+import type { DrawingSnap } from '../drawingSnapshot';
 import { Series } from '../../Series';
 import { TableObject, truncCoord } from './TableObject';
 import { silentInSecondary } from '../silentInSecondary';
@@ -33,6 +35,7 @@ function isNamedArgs(arg: any, params: string[]): boolean {
 
 export class TableHelper {
     private _tables: TableObject[] = [];
+    private _snap: DrawingSnap<TableObject> | null = null;
 
     constructor(private context: any) {}
 
@@ -457,9 +460,16 @@ export class TableHelper {
      * Called during streaming rollback.
      */
     rollbackFromBar(barIdx: number): void {
-        // Tables are typically created once (var table), not per-bar, so rollback is rare.
-        // But for correctness, filter by creation bar if tracked.
+        // Restore cell/props edits made on the re-executed bar (see drawingSnapshot.ts),
+        // then drop tables created on or after it.
+        if (this._snap && this._snap.bar === barIdx) this._tables = restoreDrawingSnap(this._snap);
+        this._tables = this._tables.filter((t: any) => t._createdAtBar === undefined || t._createdAtBar < barIdx);
         this.syncToPlot();
+    }
+
+    /** Remember tables + cells right before bar `barIdx` executes (streaming). */
+    snapshotAt(barIdx: number): void {
+        this._snap = takeDrawingSnap(this._tables, barIdx);
     }
 
     // ── Private helpers ────────────────────────────────────────
