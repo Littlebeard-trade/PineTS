@@ -66,50 +66,52 @@ export function getDatePartsInTimezone(timestamp: number, timezone: string): Dat
         };
     }
 
-    // IANA timezone name — use Intl.DateTimeFormat
-    try {
-        const formatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: timezone,
-            year: 'numeric',
-            month: 'numeric',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: 'numeric',
-            second: 'numeric',
-            weekday: 'short',
-            hour12: false,
-        });
-        const parts = formatter.formatToParts(new Date(timestamp));
-        const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
+    // IANA timezone name: UTC offset cached per (tz, 15-min UTC bucket), parts from UTC getters.
+    // Every tz transition lands on a 15-minute UTC boundary, so the offset is constant inside a
+    // bucket. Was: a new Intl.DateTimeFormat + formatToParts per call (~34 us; ~0.9 us now).
+    const off = tzOffsetMs(timestamp, tzNorm);
+    const d = new Date(timestamp + (Number.isNaN(off) ? 0 : off)); // NaN = bad tz: UTC fallback, as before
+    return {
+        year: d.getUTCFullYear(),
+        month: d.getUTCMonth() + 1,
+        day: d.getUTCDate(),
+        hour: d.getUTCHours(),
+        minute: d.getUTCMinutes(),
+        second: d.getUTCSeconds(),
+        dayOfWeek: d.getUTCDay(),
+    };
+}
 
-        let hour = get('hour');
-        if (hour === 24) hour = 0;
+const TZ_FMT = new Map<string, Intl.DateTimeFormat | null>();
+const TZ_OFF = new Map<string, number>();
+const TZ_BUCKET_MS = 900_000;
 
-        const weekdayStr = parts.find((p) => p.type === 'weekday')?.value || 'Sun';
-        const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-
-        return {
-            year: get('year'),
-            month: get('month'),
-            day: get('day'),
-            hour,
-            minute: get('minute'),
-            second: get('second'),
-            dayOfWeek: dayMap[weekdayStr] ?? 0,
-        };
-    } catch {
-        // Fallback to UTC on error
-        const d = new Date(timestamp);
-        return {
-            year: d.getUTCFullYear(),
-            month: d.getUTCMonth() + 1,
-            day: d.getUTCDate(),
-            hour: d.getUTCHours(),
-            minute: d.getUTCMinutes(),
-            second: d.getUTCSeconds(),
-            dayOfWeek: d.getUTCDay(),
-        };
+/** ms to add to a UTC timestamp to get wall-clock time in `tz` (NaN for an invalid tz). */
+function tzOffsetMs(timestamp: number, tz: string): number {
+    const bucket = Math.floor(timestamp / TZ_BUCKET_MS);
+    const key = tz + '|' + bucket;
+    let off = TZ_OFF.get(key);
+    if (off !== undefined) return off;
+    let f = TZ_FMT.get(tz);
+    if (f === undefined) {
+        try {
+            f = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+        } catch {
+            f = null;
+        }
+        TZ_FMT.set(tz, f);
     }
+    if (f === null) {
+        off = NaN;
+    } else {
+        const b = bucket * TZ_BUCKET_MS;
+        const parts = f.formatToParts(new Date(b));
+        const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
+        off = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second')) - b;
+    }
+    if (TZ_OFF.size > 200_000) TZ_OFF.clear();
+    TZ_OFF.set(key, off);
+    return off;
 }
 
 // ── ISO week number helper ───────────────────────────────────────────
