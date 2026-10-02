@@ -46,7 +46,7 @@ async function streamSteps(src: string, bars: any[], steps: Array<() => void>): 
     await new Promise<void>((resolve, reject) => {
         const evt: any = pine.stream(src, { live: true, interval: 50, pageSize: bars.length });
         evt.on('data', (ctx: any) => {
-            ctxs.push({ lines: live(ctx, '__lines__'), boxes: live(ctx, '__boxes__'), labels: live(ctx, '__labels__'), tables: live(ctx, '__tables__') });
+            ctxs.push({ lines: live(ctx, '__lines__'), boxes: live(ctx, '__boxes__'), labels: live(ctx, '__labels__'), tables: live(ctx, '__tables__'), linefills: live(ctx, '__linefills__') });
             const step = steps[ctxs.length - 1];
             if (step) step();
             else { evt.stop(); resolve(); }
@@ -59,7 +59,7 @@ async function streamSteps(src: string, bars: any[], steps: Array<() => void>): 
 /** Fresh (non-streaming) run over the same bars — what TradingView shows after a reload. */
 async function freshRun(src: string, bars: any[]) {
     const ctx: any = await new PineTS(new MemProvider(bars.map((b) => ({ ...b }))) as any, 'T', '1', bars.length).run(src);
-    return { lines: live(ctx, '__lines__'), labels: live(ctx, '__labels__') };
+    return { lines: live(ctx, '__lines__'), labels: live(ctx, '__labels__'), linefills: live(ctx, '__linefills__'), tables: live(ctx, '__tables__') };
 }
 const lineKey = (l: any) => `${l.x1}|${l.y1}|${l.x2}|${l.y2}`;
 
@@ -262,4 +262,37 @@ plot(g(bar_index * 3), "g")`;
             expect(e.g).toBe(fresh.plots['g'].data.at(-1).value);
         }
     }, 20_000);
+
+    // Upstream #382 semantics (line.delete deletes the line's linefills; a new table replaces the
+    // one at its position) flip `_deleted` on OLDER objects from the forming bar; the rollback
+    // must undo those flips too, or every tick loses one more linefill / table.
+    it('undoes the linefill cascade and the one-table-per-position replacement on the forming bar', async () => {
+        const bars = makeBars(201); // last bar_index 200: a bar that creates + trims
+        const src = `//@version=6
+indicator("t", overlay=true)
+var line[] ls = array.new<line>()
+if bar_index % 10 == 0
+    l1 = line.new(bar_index, close, bar_index + 5, close)
+    l2 = line.new(bar_index, close - 1, bar_index + 5, close - 1)
+    linefill.new(l1, l2, color.red)
+    ls.push(l1)
+    ls.push(l2)
+    if ls.size() > 6
+        ls.shift().delete()
+        ls.shift().delete()
+t = table.new(position.top_right, 1, 1)
+t.cell(0, 0, str.tostring(bar_index))
+`;
+        const ctxs = await streamSteps(src, bars, [tick(bars), tick(bars), tick(bars)]);
+        const fresh: any = await freshRun(src, bars);
+        expect(fresh.linefills.length).toBe(3);
+        expect(fresh.tables.length).toBe(1);
+        for (const c of ctxs) {
+            expect(c.lines.length).toBe(6);
+            expect(c.linefills.length).toBe(3);
+            expect(c.tables.length).toBe(1);
+            expect(c.tables[0].cells[0][0].text).toBe('200');
+        }
+        expect(ctxs.at(-1).lines.map(lineKey).sort()).toEqual(fresh.lines.map(lineKey).sort());
+    });
 });
