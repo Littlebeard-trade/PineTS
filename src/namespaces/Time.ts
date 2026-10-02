@@ -67,8 +67,14 @@ export function getDatePartsInTimezone(timestamp: number, timezone: string): Dat
     }
 
     // IANA timezone name: UTC offset cached per (tz, 15-min UTC bucket), parts from UTC getters.
-    // Every tz transition lands on a 15-minute UTC boundary, so the offset is constant inside a
-    // bucket. Was: a new Intl.DateTimeFormat + formatToParts per call (~34 us; ~0.9 us now).
+    // Almost every tz transition lands on a 15-minute UTC boundary (tzOffsetMs handles the few that
+    // don't), so the offset is constant inside a bucket. Was: a new Intl.DateTimeFormat + formatToParts per call (~34 us; ~0.9 us now).
+    // Not a valid Date (na, +-8.64e15 overflow): UTC-getter parts (NaN for na), as the old try/catch did
+    if (!Number.isFinite(timestamp) || Math.abs(timestamp) > 8.64e15) {
+        const d = new Date(timestamp);
+        return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: d.getUTCHours(),
+                 minute: d.getUTCMinutes(), second: d.getUTCSeconds(), dayOfWeek: d.getUTCDay() };
+    }
     const off = tzOffsetMs(timestamp, tzNorm);
     const d = new Date(timestamp + (Number.isNaN(off) ? 0 : off)); // NaN = bad tz: UTC fallback, as before
     return {
@@ -104,10 +110,17 @@ function tzOffsetMs(timestamp: number, tz: string): number {
     if (f === null) {
         off = NaN;
     } else {
+        // Most transitions land on a 15-min UTC boundary, but not all (America/St_Johns and
+        // Goose_Bay 1987-2011 and Moncton 1993-2006 switched at 00:01 local; Asia/Gaza 2010-11, Antarctica/Casey
+        // 2020-22, ...): when the bucket's two ends disagree, answer exactly for this timestamp, uncached.
         const b = bucket * TZ_BUCKET_MS;
-        const parts = f.formatToParts(new Date(b));
-        const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
-        off = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second')) - b;
+        const at = (t: number) => {
+            const parts = f!.formatToParts(new Date(t));
+            const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
+            return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second')) - Math.floor(t / 1000) * 1000;
+        };
+        off = at(b);
+        if (at(b + TZ_BUCKET_MS - 1000) !== off) return at(timestamp);
     }
     if (TZ_OFF.size > 200_000) TZ_OFF.clear();
     TZ_OFF.set(key, off);
