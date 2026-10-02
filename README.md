@@ -1,3 +1,19 @@
+> **Littlebeard-trade fork, branch `lb`.** LuxAlgo's PineTS plus fixes used by
+> [LB Charts](https://github.com/Littlebeard-trade/lbcharts). Upstream's README follows below.
+>
+> - **Live-bar rollback like TradingView**: on the forming bar, drawings, `var` collections and
+>   function contexts created by the bar are rolled back on every tick (no flicker / growth);
+>   `request.security` secondaries keep their bars (tests in `tests/`).
+> - **Speed**: time-zone offsets cached per 15-minute UTC bucket (exact at off-grid transitions):
+>   Pine studies in LB Charts draw ~2x faster.
+> - **Fixes**: matrix `add_row` / `add_col` named args (in the method sources; `PineMatrixObject.ts`
+>   is generated), tuple names leaking into function scope; `transpile` exported for debugging.
+> - **Tests**: `TZ=UTC npx vitest run`. ~66 tests fail on upstream too (Binance blocks US IPs: HTTP
+>   451, plus time-zone assumptions); compare failing test *names* with upstream's, not the count.
+> - **Updating**: `git tag lb-pre-rebase-<date> lb && git fetch origin && git rebase origin/dev`,
+>   `npm run build:prod:all`, compare the LB script library's output old vs new, then rebuild
+>   lbcharts (`./scripts_build_forks.sh`) and force-push `lb` here.
+
 <p align="center">
   <img src="./.github/images/banner.png" alt="PineTS" />
 </p>
